@@ -23,7 +23,16 @@ custom_css = """
 st.markdown(custom_css, unsafe_allow_html=True)
 
 # --- QUẢN LÝ TRẠNG THÁI (SESSION STATE) ---
+# ĐÃ SỬA: Đưa toàn bộ giá trị mặc định của FK và IK lên bộ nhớ tạm để tránh Warning
 if 'num_joints' not in st.session_state: st.session_state.num_joints = 6
+if 'fk_base' not in st.session_state: st.session_state.fk_base = 45
+if 'fk_t1' not in st.session_state: st.session_state.fk_t1 = 45
+if 'fk_t2' not in st.session_state: st.session_state.fk_t2 = -30
+if 'fk_t3' not in st.session_state: st.session_state.fk_t3 = 10
+if 't_x' not in st.session_state: st.session_state.t_x = 80.0
+if 't_y' not in st.session_state: st.session_state.t_y = 150.0
+if 't_z' not in st.session_state: st.session_state.t_z = 100.0
+
 if 'full_dh_df' not in st.session_state:
     st.session_state.full_dh_df = pd.DataFrame([
         {'θ': 0.0, 'd': 80.0, 'a': 0.0, 'α': -90.0},
@@ -38,7 +47,7 @@ def set_fk_preset(base, t1, t2, t3):
     st.session_state.fk_base = base
     st.session_state.fk_t1 = t1
     st.session_state.fk_t2 = t2
-    if 'fk_t3' in st.session_state: st.session_state.fk_t3 = t3
+    if st.session_state.num_links == 3: st.session_state.fk_t3 = t3
 
 def set_ik_preset(x, y, z):
     st.session_state.t_x = float(x)
@@ -55,11 +64,8 @@ def forward_kinematics_2d(lengths, angles_deg):
         z.append(z[-1] + l * np.sin(current_angle))
     return np.array(r), np.array(z)
 
-# 1. HÀM GIẢI TÍCH (ANALYTIC IK) DÀNH RIÊNG CHO 2 LINKS
 def analytic_ik_2d(target_r, target_z, l1, l2, elbow_mode):
     dist_sq = target_r**2 + target_z**2
-    
-    # Giới hạn tầm với để không bị lỗi toán học (căn số âm)
     max_reach_sq = (l1 + l2)**2
     min_reach_sq = (l1 - l2)**2
     if dist_sq > max_reach_sq:
@@ -71,11 +77,9 @@ def analytic_ik_2d(target_r, target_z, l1, l2, elbow_mode):
         target_r, target_z = target_r * scale, target_z * scale
         dist_sq = min_reach_sq
         
-    # Định lý hàm số Cosin
     c2 = (dist_sq - l1**2 - l2**2) / (2 * l1 * l2)
     c2 = np.clip(c2, -1.0, 1.0)
     
-    # ÉP NGHIỆM: s2 dương -> Gập xuống (Elbow down), s2 âm -> Gập lên (Elbow up)
     if elbow_mode == "Elbow down":
         s2 = np.sqrt(1 - c2**2)
     else:
@@ -88,9 +92,8 @@ def analytic_ik_2d(target_r, target_z, l1, l2, elbow_mode):
     
     return np.degrees(np.array([theta1, theta2]))
 
-# 2. HÀM DÒ DẪM (CCD IK) DÀNH CHO 3 LINKS TRỞ LÊN
 def ccd_inverse_kinematics(target_r, target_z, lengths, max_iter=100, tolerance=0.1):
-    angles = np.full(len(lengths), 0.01) # Mớm 0.01 để phá Singularity
+    angles = np.full(len(lengths), 0.01)
     target = np.array([target_r, target_z])
     for _ in range(max_iter):
         for i in range(len(lengths)-1, -1, -1):
@@ -148,6 +151,7 @@ with col_ctrl:
         st.write("**Links**")
         num_links_str = st.radio("", ["2 Links", "3 Links"], index=1, horizontal=True, label_visibility="collapsed", key="link_radio")
         num_links = 2 if "2" in num_links_str else 3
+        st.session_state.num_links = num_links # Lưu số link để hàm preset hiểu
         
         st.write("**Link Lengths** (px)")
         l_cols = st.columns(3)
@@ -159,10 +163,11 @@ with col_ctrl:
         
         if mode == "FK":
             st.write("**Joint Angles**")
-            th_base = st.slider("Base (Pan)", -180, 180, 45, key="fk_base")
-            th1 = st.slider("theta 1 (Tilt)", -180, 180, 45, key="fk_t1")
-            th2 = st.slider("theta 2 (Tilt)", -180, 180, -30, key="fk_t2")
-            th3 = st.slider("theta 3 (Tilt)", -180, 180, 10, key="fk_t3") if num_links == 3 else 0
+            # ĐÃ SỬA: Xóa bỏ tham số value=... vì nó đã lấy mặc định từ st.session_state
+            th_base = st.slider("Base (Pan)", -180, 180, key="fk_base")
+            th1 = st.slider("theta 1 (Tilt)", -180, 180, key="fk_t1")
+            th2 = st.slider("theta 2 (Tilt)", -180, 180, key="fk_t2")
+            th3 = st.slider("theta 3 (Tilt)", -180, 180, key="fk_t3") if num_links == 3 else 0
             angles = [th1, th2, th3] if num_links == 3 else [th1, th2]
             
             st.write("**Presets**")
@@ -175,9 +180,10 @@ with col_ctrl:
         else: # IK
             st.write("**Target (Click +/- or Enter)**")
             t_cols1 = st.columns(2)
-            t_x = t_cols1[0].number_input("X", min_value=-1000.0, max_value=1000.0, value=80.0, step=10.0, format="%.1f", key="t_x")
-            t_y = t_cols1[1].number_input("Y", min_value=-1000.0, max_value=1000.0, value=150.0, step=10.0, format="%.1f", key="t_y")
-            t_z = st.number_input("Z", min_value=-1000.0, max_value=1000.0, value=100.0, step=10.0, format="%.1f", key="t_z")
+            # ĐÃ SỬA: Xóa bỏ tham số value=... vì nó đã lấy mặc định từ st.session_state
+            t_x = t_cols1[0].number_input("X", min_value=-1000.0, max_value=1000.0, step=10.0, format="%.1f", key="t_x")
+            t_y = t_cols1[1].number_input("Y", min_value=-1000.0, max_value=1000.0, step=10.0, format="%.1f", key="t_y")
+            t_z = st.number_input("Z", min_value=-1000.0, max_value=1000.0, step=10.0, format="%.1f", key="t_z")
             
             st.write("") 
             if num_links == 2:
@@ -233,12 +239,9 @@ with col_plot:
             base_rad = np.arctan2(t_y, t_x)
             t_r = np.sqrt(t_x**2 + t_y**2)
             
-            # --- ĐIỀU HƯỚNG THUẬT TOÁN ---
             if len(lengths) == 2:
-                # 2 Khớp: Dùng toán học giải tích (Chuẩn 100%)
                 angles = analytic_ik_2d(t_r, t_z, lengths[0], lengths[1], elbow_mode)
             else:
-                # 3 Khớp: Dùng thuật toán lặp dò dẫm CCD
                 angles = ccd_inverse_kinematics(t_r, t_z, lengths)
                 
             r, z_pts = forward_kinematics_2d(lengths, angles)
