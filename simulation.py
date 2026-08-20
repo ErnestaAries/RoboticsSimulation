@@ -39,7 +39,7 @@ with st.sidebar:
 # =====================================================================
 # QUẢN LÝ TRẠNG THÁI VÀ CÁC HÀM TOÁN HỌC DÙNG CHUNG
 # =====================================================================
-if 'num_joints' not in st.session_state: st.session_state.num_joints = 6
+if 'num_joints' not in st.session_state: st.session_state.num_joints = 3
 if 'fk_base' not in st.session_state: st.session_state.fk_base = 45
 if 'fk_t1' not in st.session_state: st.session_state.fk_t1 = 45
 if 'fk_t2' not in st.session_state: st.session_state.fk_t2 = -30
@@ -60,8 +60,12 @@ if 'full_dh_df' not in st.session_state:
 
 if 'student_formulas_dh' not in st.session_state:
     st.session_state.student_formulas_dh = [[["1", "0", "0", "0"], ["0", "1", "0", "0"], ["0", "0", "1", "0"], ["0", "0", "0", "1"]] for _ in range(6)]
-if 'dh_step_unlocked' not in st.session_state:
-    st.session_state.dh_step_unlocked = 0
+if 'dh_step_unlocked' not in st.session_state: st.session_state.dh_step_unlocked = 0
+
+if 'ik_formulas' not in st.session_state:
+    st.session_state.ik_formulas = [""] * 6
+if 'ik_calculated_thetas' not in st.session_state:
+    st.session_state.ik_calculated_thetas = None
 
 def set_fk_preset(base, t1, t2, t3):
     st.session_state.fk_base = base; st.session_state.fk_t1 = t1; st.session_state.fk_t2 = t2
@@ -88,7 +92,6 @@ def analytic_ik_2d(target_r, target_z, l1, l2, elbow_mode):
     elif dist_sq < min_reach_sq:
         scale = np.sqrt(min_reach_sq / dist_sq)
         target_r, target_z, dist_sq = target_r * scale, target_z * scale, min_reach_sq
-        
     c2 = np.clip((dist_sq - l1**2 - l2**2) / (2 * l1 * l2), -1.0, 1.0)
     s2 = np.sqrt(1 - c2**2) if elbow_mode == "Elbow down" else -np.sqrt(1 - c2**2)
     theta2 = np.arctan2(s2, c2)
@@ -119,13 +122,51 @@ def dh_transform_matrix(theta, d, a, alpha):
     ])
 
 def evaluate_student_formula(expr_str, theta_val, d_val, a_val, alpha_val):
-    if expr_str is None or str(expr_str).strip() == "": return 0.0
-    safe_dict = {
-        'cos': lambda x: np.cos(np.radians(x)), 'sin': lambda x: np.sin(np.radians(x)),
-        'theta': theta_val, 'θ': theta_val, 'd': d_val, 'a': a_val, 'alpha': alpha_val, 'α': alpha_val
-    }
+    if not expr_str: return 0.0
+    safe_dict = {'cos': lambda x: np.cos(np.radians(x)), 'sin': lambda x: np.sin(np.radians(x)), 'theta': theta_val, 'θ': theta_val, 'd': d_val, 'a': a_val, 'alpha': alpha_val, 'α': alpha_val}
     try: return float(eval(str(expr_str).replace('^', '**'), {"__builtins__": {}}, safe_dict))
-    except Exception: return None
+    except: return None
+
+# TÍNH NĂNG MỚI: Dịch công thức IK có bộ lặp (Cho phép giải ngược từ Khớp 3 lên Khớp 2)
+def evaluate_ik_formula(formulas, tx, ty, tz, dh_df, num_j):
+    safe_dict = {
+        'X': tx, 'Y': ty, 'Z': tz, 'x': tx, 'y': ty, 'z': tz,
+        'cos': lambda a: np.cos(np.radians(a)), 'sin': lambda a: np.sin(np.radians(a)),
+        'acos': lambda v: np.degrees(np.arccos(np.clip(v, -1.0, 1.0))), 
+        'asin': lambda v: np.degrees(np.arcsin(np.clip(v, -1.0, 1.0))),
+        'atan2': lambda y, x: np.degrees(np.arctan2(y, x)),
+        'sqrt': np.sqrt, 'pi': np.pi
+    }
+    for i in range(len(dh_df)):
+        safe_dict[f'a{i+1}'] = dh_df.iloc[i]['a']; safe_dict[f'd{i+1}'] = dh_df.iloc[i]['d']; safe_dict[f'alpha{i+1}'] = dh_df.iloc[i]['α']
+    
+    results = [0.0] * num_j
+    unsolved = list(range(num_j))
+    
+    # Cho máy tính lặp nhiều vòng: Ô nào tính được thì tính trước rồi lưu biến lại cho ô khác xài
+    for _ in range(num_j):
+        for i in unsolved.copy():
+            f = formulas[i]
+            if not f.strip():
+                unsolved.remove(i)
+            else:
+                try:
+                    val = float(eval(str(f).replace('^', '**'), {"__builtins__": {}}, safe_dict))
+                    results[i] = val
+                    safe_dict[f'theta{i+1}'] = val  # <--- BÍ QUYẾT Ở ĐÂY: Lưu lại kết quả để ô khác xài
+                    unsolved.remove(i)
+                except Exception:
+                    pass # Cứ bỏ qua, chờ vòng lặp sau (vì có thể biến phụ thuộc như theta3 chưa được tính)
+                    
+    if unsolved:
+        # Nếu lặp xong mà vẫn còn ô chưa giải được -> Bắt lỗi của ô đầu tiên bị vướng để báo cho người dùng
+        first_fail = unsolved[0]
+        try:
+            eval(str(formulas[first_fail]).replace('^', '**'), {"__builtins__": {}}, safe_dict)
+        except Exception as e:
+            return None, f"Ô theta {first_fail+1}: {str(e)}"
+            
+    return results, "OK"
 
 def draw_axes_3d(fig, T, scale=35):
     origin = T[:3, 3]
@@ -134,9 +175,35 @@ def draw_axes_3d(fig, T, scale=35):
         fig.add_trace(go.Scatter3d(x=[origin[0], end_pt[0]], y=[origin[1], end_pt[1]], z=[origin[2], end_pt[2]], mode='lines', line=dict(color=color, width=5), hoverinfo='skip', showlegend=False))
         fig.add_trace(go.Cone(x=[end_pt[0]], y=[end_pt[1]], z=[end_pt[2]], u=[vec[0]], v=[vec[1]], w=[vec[2]], sizemode='absolute', sizeref=10, anchor='tail', colorscale=[[0, color], [1, color]], showscale=False, hoverinfo='skip'))
 
+# TÍNH NĂNG MỚI: VẼ KHỐI TRỤ (CYLINDER) THAY CHO HÌNH CẦU
+def add_cylinder(fig, T, radius=8, height=24, color='#d3d3d3'):
+    z_vals = np.linspace(-height/2, height/2, 2)
+    theta = np.linspace(0, 2*np.pi, 20)
+    theta_grid, z_grid = np.meshgrid(theta, z_vals)
+    x_grid, y_grid = radius * np.cos(theta_grid), radius * np.sin(theta_grid)
+    
+    # Thân trụ
+    X, Y, Z = np.zeros_like(x_grid), np.zeros_like(y_grid), np.zeros_like(z_grid)
+    for i in range(x_grid.shape[0]):
+        for j in range(x_grid.shape[1]):
+            pt_world = np.dot(T, np.array([x_grid[i,j], y_grid[i,j], z_grid[i,j], 1]))
+            X[i,j], Y[i,j], Z[i,j] = pt_world[:3]
+    fig.add_trace(go.Surface(x=X, y=Y, z=Z, colorscale=[[0, color], [1, color]], showscale=False, hoverinfo='skip', opacity=1.0))
+    
+    # Nắp trụ (Trên & Dưới)
+    r_grid, th_grid = np.meshgrid(np.linspace(0, radius, 2), theta)
+    xc, yc = r_grid * np.cos(th_grid), r_grid * np.sin(th_grid)
+    for z_off in [-height/2, height/2]:
+        Xc, Yc, Zc = np.zeros_like(xc), np.zeros_like(yc), np.zeros_like(xc)
+        for i in range(xc.shape[0]):
+            for j in range(xc.shape[1]):
+                pt_w = np.dot(T, np.array([xc[i,j], yc[i,j], z_off, 1]))
+                Xc[i,j], Yc[i,j], Zc[i,j] = pt_w[:3]
+        fig.add_trace(go.Surface(x=Xc, y=Yc, z=Zc, colorscale=[[0, color], [1, color]], showscale=False, hoverinfo='skip'))
+
 
 # =====================================================================
-# MODULE 1: CÁNH TAY NỐI TIẾP (BẢN GỐC 100% CỦA BẠN)
+# MODULE 1: CÁNH TAY NỐI TIẾP (BẢN FULL OPTION + CYLINDER + IK PRACTICE)
 # =====================================================================
 if robot_type == "Cánh tay nối tiếp (Articulated)":
     header_col1, header_col2 = st.columns([3, 1])
@@ -150,45 +217,28 @@ if robot_type == "Cánh tay nối tiếp (Articulated)":
         
         if mode in ["IK", "FK"]:
             st.write("**Links**")
-            num_links = 2 if "2" in st.radio("", ["2 Links", "3 Links"], index=1, horizontal=True, label_visibility="collapsed", key="link_radio") else 3
+            num_links = 2 if "2" in st.radio("", ["2 Links", "3 Links"], index=1, horizontal=True, label_visibility="collapsed") else 3
             st.session_state.num_links = num_links
-            
-            st.write("**Link Lengths** (px)")
             l_cols = st.columns(3)
-            lengths = [l_cols[0].number_input("L1", 1.0, 500.0, 120.0, key="l1"), l_cols[1].number_input("L2", 1.0, 500.0, 100.0, key="l2")]
-            if num_links == 3: lengths.append(l_cols[2].number_input("L3", 1.0, 500.0, 80.0, key="l3"))
+            lengths = [l_cols[0].number_input("L1", 1.0, 500.0, 120.0), l_cols[1].number_input("L2", 1.0, 500.0, 100.0)]
+            if num_links == 3: lengths.append(l_cols[2].number_input("L3", 1.0, 500.0, 80.0))
             max_reach = sum(lengths)
             
             if mode == "FK":
-                st.write("**Joint Angles**")
                 th_base = st.slider("Base (Pan)", -180, 180, key="fk_base")
                 angles = [st.slider("theta 1", -180, 180, key="fk_t1"), st.slider("theta 2", -180, 180, key="fk_t2")]
                 if num_links == 3: angles.append(st.slider("theta 3", -180, 180, key="fk_t3"))
-                
-                st.write("**Presets**")
-                p_cols = st.columns(2)
-                p_cols[0].button("Inspect", on_click=set_fk_preset, args=(45, 45, -30, 10))
-                p_cols[1].button("Reach", on_click=set_fk_preset, args=(0, 0, 0, 0))
-
-            else: # IK
-                st.write("**Target (Click +/- or Enter)**")
+            else:
                 t_cols = st.columns(2)
                 t_x, t_y = t_cols[0].number_input("X", -1000.0, 1000.0, step=10.0, key="t_x"), t_cols[1].number_input("Y", -1000.0, 1000.0, step=10.0, key="t_y")
                 t_z = st.number_input("Z", -1000.0, 1000.0, step=10.0, key="t_z")
-                
-                st.write("") 
-                if num_links == 2:
-                    elbow_mode = st.radio("Elbow Config", ["Elbow down", "Elbow up"], index=0, label_visibility="collapsed", key="elbow_mode")
-                    st.caption("2-link IK uses Analytic solving.")
-                else:
-                    elbow_mode = "Elbow down"; st.caption("3-link IK uses CCD solving.")
-                
+                elbow_mode = st.radio("Elbow Config", ["Elbow down", "Elbow up"], index=0, label_visibility="collapsed") if num_links == 2 else "Elbow down"
                 with header_col2:
                     if np.sqrt(t_x**2 + t_y**2 + t_z**2) > max_reach: st.markdown('<div class="status-box status-red">🔴 Target outside reach</div>', unsafe_allow_html=True)
                     else: st.markdown('<div class="status-box status-green">🟢 Ready</div>', unsafe_allow_html=True)
 
         elif mode == "DH":
-            practice_mode = st.toggle(" Bật Practice Mode (Nhập Công Thức)")
+            practice_mode = st.toggle("🎓 Bật Practice Mode")
             
             st.write("**Joints**")
             j1, j2, j3 = st.columns([1.5, 1, 1.5])
@@ -197,37 +247,31 @@ if robot_type == "Cánh tay nối tiếp (Articulated)":
             if j3.button("➕", use_container_width=True) and st.session_state.num_joints < 6: st.session_state.num_joints += 1
             
             st.write("**DH Parameters**")
-            st.session_state.full_dh_df.update(st.data_editor(st.session_state.full_dh_df.head(st.session_state.num_joints), use_container_width=True, hide_index=False))
+            current_dh_df = st.session_state.full_dh_df.head(st.session_state.num_joints)
+            st.session_state.full_dh_df.update(st.data_editor(current_dh_df, use_container_width=True, hide_index=False))
             
-            st.write("**Joint Angles**")
-            dh_angles = [st.slider(f"theta {i+1}", -180, 180, 0, key=f"dh_slider_{i}", disabled=practice_mode) for i in range(st.session_state.num_joints)]
+            if not practice_mode:
+                st.write("**Joint Angles**")
+                dh_angles = [st.slider(f"theta {i+1}", -180, 180, 0, key=f"dh_slider_{i}") for i in range(st.session_state.num_joints)]
 
     with col_plot:
         fig = go.Figure()
 
         if mode in ["IK", "FK"]:
-            if mode == "FK":
-                base_rad, angles_res = np.radians(th_base), angles
+            # Render lines and spheres as before for standard IK/FK
+            if mode == "FK": base_rad, angles_res = np.radians(th_base), angles
             else:
                 base_rad, t_r = np.arctan2(t_y, t_x), np.sqrt(t_x**2 + t_y**2)
                 angles_res = analytic_ik_2d(t_r, t_z, lengths[0], lengths[1], elbow_mode) if len(lengths) == 2 else ccd_inverse_kinematics(t_r, t_z, lengths)
-                th_base = np.degrees(base_rad)
-                angles = angles_res
-                
+                th_base, angles = np.degrees(base_rad), angles_res
             r, z_pts = forward_kinematics_2d(lengths, angles_res)
             x_pts, y_pts = r * np.cos(base_rad), r * np.sin(base_rad)
             end_x, end_y, end_z = x_pts[-1], y_pts[-1], z_pts[-1]
             
-            theta_cir = np.linspace(0, 2*np.pi, 60)
-            c_cos, c_sin, z_zero = max_reach * np.cos(theta_cir), max_reach * np.sin(theta_cir), np.zeros_like(theta_cir)
-            for x, y, z in [(c_cos, c_sin, z_zero), (c_cos, z_zero, c_sin), (z_zero, c_cos, c_sin)]:
-                fig.add_trace(go.Scatter3d(x=x, y=y, z=z, mode='lines', line=dict(color='lightblue', width=1, dash='dot'), showlegend=False))
-            
             colors = ['#1f77b4', '#d62728', '#2ca02c']
             fig.add_trace(go.Scatter3d(x=[0,0], y=[0,0], z=[-20, 0], mode='lines', line=dict(color='gray', width=15), showlegend=False))
             for i in range(len(lengths)):
-                fig.add_trace(go.Scatter3d(x=[x_pts[i], x_pts[i+1]], y=[y_pts[i], y_pts[i+1]], z=[z_pts[i], z_pts[i+1]], mode='lines+markers', line=dict(color=colors[i], width=12), marker=dict(size=8, color='white', line=dict(width=2, color='black')), showlegend=False))
-                
+                fig.add_trace(go.Scatter3d(x=[x_pts[i], x_pts[i+1]], y=[y_pts[i], y_pts[i+1]], z=[z_pts[i], z_pts[i+1]], mode='lines+markers', line=dict(color=colors[i], width=12), marker=dict(size=8, color='white'), showlegend=False))
             if mode == "IK":
                 t_color = 'royalblue' if np.sqrt(t_x**2 + t_y**2 + t_z**2) <= max_reach else 'red'
                 for x, y, z in [([t_x - 15, t_x + 15], [t_y, t_y], [t_z, t_z]), ([t_x, t_x], [t_y - 15, t_y + 15], [t_z, t_z]), ([t_x, t_x], [t_y, t_y], [t_z - 15, t_z + 15])]:
@@ -236,84 +280,129 @@ if robot_type == "Cánh tay nối tiếp (Articulated)":
         elif mode == "DH":
             link_colors = ['#2c3e50', '#e74c3c', '#1abc9c', '#f39c12', '#9b59b6', '#34495e']
             
-            gt_matrices, T_current_gt = [], np.eye(4)
-            for i in range(st.session_state.num_joints):
-                row = st.session_state.full_dh_df.iloc[i]
-                T_i = dh_transform_matrix(row['θ'] + dh_angles[i], row['d'], row['a'], row['α'])
-                T_current_gt = np.dot(T_current_gt, T_i)
-                gt_matrices.append(T_i)
-
             if not practice_mode:
                 st.subheader("DH Forward Kinematics (3D) - Auto Mode")
                 T_matrices, x_pts, y_pts, z_pts, T_current = [np.eye(4)], [0], [0], [0], np.eye(4)
                 for i in range(st.session_state.num_joints):
-                    T_current = np.dot(T_current, gt_matrices[i])
+                    row = current_dh_df.iloc[i]
+                    T_i = dh_transform_matrix(row['θ'] + dh_angles[i], row['d'], row['a'], row['α'])
+                    T_current = np.dot(T_current, T_i)
                     T_matrices.append(T_current); x_pts.append(T_current[0, 3]); y_pts.append(T_current[1, 3]); z_pts.append(T_current[2, 3])
+                end_x, end_y, end_z = T_current[0, 3], T_current[1, 3], T_current[2, 3]
                 
-                end_transform, end_x, end_y, end_z = T_current, T_current[0, 3], T_current[1, 3], T_current[2, 3]
+                # VẼ LINKS BẰNG LINE VÀ JOINTS BẰNG CYLINDERS (Thay thế hình cầu)
                 for i in range(st.session_state.num_joints):
                     fig.add_trace(go.Scatter3d(x=[x_pts[i], x_pts[i+1]], y=[y_pts[i], y_pts[i+1]], z=[z_pts[i], z_pts[i+1]], mode='lines', line=dict(color=link_colors[i % len(link_colors)], width=18), showlegend=False))
-                fig.add_trace(go.Scatter3d(x=x_pts[:-1], y=y_pts[:-1], z=z_pts[:-1], mode='markers', marker=dict(size=14, color='lightgray', line=dict(width=2, color='darkgray')), showlegend=False))
-                fig.add_trace(go.Scatter3d(x=[x_pts[-1]], y=[y_pts[-1]], z=[z_pts[-1]], mode='markers', marker=dict(size=22, color='royalblue', line=dict(width=2, color='darkblue')), showlegend=False))
-                for T in T_matrices: draw_axes_3d(fig, T, scale=35)
                 
-            else:
-                prac_type = st.radio("Cách kiểm tra", ["Từng bước (Tính từng khớp T_i)", "Cuối cùng (Tính thẳng ra End-Effector T_0^n)"], horizontal=True)
-                st.info("💡 Có thể nhập số (VD: `0`, `1`) hoặc công thức (VD: `cos(theta)`, `a*sin(theta)`), `-sin(theta)*cos(alpha)`).")
-                is_success = False
+                # End-effector vẫn giữ hình cầu cho dễ phân biệt
+                fig.add_trace(go.Scatter3d(x=[x_pts[-1]], y=[y_pts[-1]], z=[z_pts[-1]], mode='markers', marker=dict(size=22, color='royalblue', line=dict(width=2, color='darkblue')), showlegend=False))
+                
+                for i, T in enumerate(T_matrices[:-1]): 
+                    add_cylinder(fig, T) # Vẽ khối trụ ở tâm trục quay
+                    draw_axes_3d(fig, T, scale=35)
+                draw_axes_3d(fig, T_matrices[-1], scale=35) # Trục cuối
 
-                if prac_type == "Từng bước (Tính từng khớp T_i)":
+            else:
+                prac_type = st.radio("Loại bài tập:", ["📚 Từng bước FK (Ma trận)", "🎯 Giải tích IK (Nhập Công thức)"], horizontal=True)
+                
+                if prac_type == "📚 Từng bước FK (Ma trận)":
+                    # Logic cũ của bạn
+                    st.info("💡 Nhập ma trận biến đổi. Có thể dùng số `0`, `1` hoặc công thức `cos(theta)`, `-sin(theta)*cos(alpha)`.")
                     current_step = st.session_state.dh_step_unlocked
+                    is_success = False
+                    
+                    gt_matrices = []
+                    T_current_gt = np.eye(4)
+                    for i in range(st.session_state.num_joints):
+                        row = current_dh_df.iloc[i]
+                        T_i = dh_transform_matrix(row['θ'] + 0, row['d'], row['a'], row['α']) # Góc 0
+                        T_current_gt = np.dot(T_current_gt, T_i); gt_matrices.append(T_i)
+                        
                     if current_step < st.session_state.num_joints:
-                        st.write(f"### Nhập công thức $T_{current_step}^{current_step+1}$")
+                        st.write(f"### Nhập ma trận $T_{current_step}^{current_step+1}$")
                         with st.form(key=f"form_step_{current_step}"):
                             edited_matrix_df = st.data_editor(pd.DataFrame(st.session_state.student_formulas_dh[current_step], columns=['Col 1', 'Col 2', 'Col 3', 'Col 4'], dtype=str), use_container_width=True, hide_index=True)
                             if st.form_submit_button(f"Kiểm tra Khớp {current_step+1}"):
                                 st.session_state.student_formulas_dh[current_step] = edited_matrix_df.values.tolist()
-                                row = st.session_state.full_dh_df.iloc[current_step]
-                                student_eval_matrix = np.zeros((4,4))
-                                has_syntax_error = False
+                                row = current_dh_df.iloc[current_step]
+                                student_eval_matrix, has_syntax_error = np.zeros((4,4)), False
                                 for r in range(4):
                                     for c in range(4):
-                                        val = evaluate_student_formula(st.session_state.student_formulas_dh[current_step][r][c], row['θ'] + dh_angles[current_step], row['d'], row['a'], row['α'])
+                                        val = evaluate_student_formula(st.session_state.student_formulas_dh[current_step][r][c], row['θ'], row['d'], row['a'], row['α'])
                                         if val is None: has_syntax_error = True; break
                                         student_eval_matrix[r, c] = val
-                                if has_syntax_error: st.error("❌ Cú pháp sai! Hãy kiểm tra lại biến hoặc hàm.")
+                                if has_syntax_error: st.error("❌ Cú pháp sai!")
                                 elif np.allclose(student_eval_matrix, gt_matrices[current_step], atol=0.05):
-                                    st.success(f"✅ Chính xác! Đã mở khóa đồ họa Khớp {current_step+1}."); st.session_state.dh_step_unlocked += 1; st.rerun()
-                                else: st.error("Sai rồi! Công thức lượng giác hoặc giá trị của bạn chưa đúng.")
+                                    st.success("✅ Chính xác!"); st.session_state.dh_step_unlocked += 1; st.rerun()
+                                else: st.error("Sai rồi!")
                         with st.expander("Gợi ý công thức"): st.latex(r"T = \begin{bmatrix} \cos(\theta) & -\sin(\theta)\cos(\alpha) & \sin(\theta)\sin(\alpha) & a\cos(\theta) \\ \sin(\theta) & \cos(\theta)\cos(\alpha) & -\cos(\theta)\sin(\alpha) & a\sin(\theta) \\ 0 & \sin(\alpha) & \cos(\alpha) & d \\ 0 & 0 & 0 & 1 \end{bmatrix}")
                     else:
-                        st.success("🎉 Xin chúc mừng! Bạn đã giải đúng toàn bộ.")
-                        if st.button("Làm lại từ đầu"): st.session_state.dh_step_unlocked = 0; st.session_state.student_formulas_dh = [[["1", "0", "0", "0"], ["0", "1", "0", "0"], ["0", "0", "1", "0"], ["0", "0", "0", "1"]] for _ in range(6)]; st.rerun()
-                else:
-                    st.write(f"### Nhập công thức End-Effector $T_0^{st.session_state.num_joints}$")
-                    with st.form(key="form_final"):
-                        edited_matrix_df = st.data_editor(pd.DataFrame(st.session_state.student_formulas_dh[0], columns=['Col 1', 'Col 2', 'Col 3', 'Col 4'], dtype=str), use_container_width=True, hide_index=True)
-                        if st.form_submit_button("Kiểm tra toàn bộ Robot"):
-                            st.session_state.student_formulas_dh[0] = edited_matrix_df.values.tolist()
-                            student_eval_matrix, has_syntax_error = np.zeros((4,4)), False
-                            for r in range(4):
-                                for c in range(4):
-                                    val = evaluate_student_formula(st.session_state.student_formulas_dh[0][r][c], 0, 0, 0, 0)
-                                    if val is None: has_syntax_error = True; break
-                                    student_eval_matrix[r, c] = val
-                            if has_syntax_error: st.error("❌ Cú pháp sai! Vui lòng nhập kết quả dạng số.")
-                            elif np.allclose(student_eval_matrix, T_current_gt, atol=0.05): st.success("🎉 Tuyệt vời!"); is_success = True
-                            else: st.error("Chưa chính xác.")
-
-                draw_axes_3d(fig, np.eye(4), scale=35) 
-                draw_limit = st.session_state.dh_step_unlocked if prac_type == "Từng bước (Tính từng khớp T_i)" else (st.session_state.num_joints if is_success else 0)
-                T_draw, x_pts, y_pts, z_pts = np.eye(4), [0], [0], [0]
-                for i in range(draw_limit):
-                    T_draw = np.dot(T_draw, gt_matrices[i])
-                    x_pts.append(T_draw[0, 3]); y_pts.append(T_draw[1, 3]); z_pts.append(T_draw[2, 3])
+                        st.success("🎉 Bạn đã giải đúng toàn bộ!")
+                        if st.button("Làm lại từ đầu"): st.session_state.dh_step_unlocked = 0; st.rerun()
+                    
+                    # Vẽ đồ họa cho chế độ FK Practice
+                    T_draw, x_pts, y_pts, z_pts = np.eye(4), [0], [0], [0]
+                    add_cylinder(fig, T_draw)
                     draw_axes_3d(fig, T_draw, scale=35)
-                    fig.add_trace(go.Scatter3d(x=[x_pts[-2], x_pts[-1]], y=[y_pts[-2], y_pts[-1]], z=[z_pts[-2], z_pts[-1]], mode='lines', line=dict(color=link_colors[i % len(link_colors)], width=18), showlegend=False))
-                    fig.add_trace(go.Scatter3d(x=[x_pts[-2]], y=[y_pts[-2]], z=[z_pts[-2]], mode='markers', marker=dict(size=14, color='lightgray', line=dict(width=2, color='darkgray')), showlegend=False))
-                if draw_limit > 0 and draw_limit == st.session_state.num_joints:
-                    fig.add_trace(go.Scatter3d(x=[x_pts[-1]], y=[y_pts[-1]], z=[z_pts[-1]], mode='markers', marker=dict(size=22, color='royalblue', line=dict(width=2, color='darkblue')), showlegend=False))
-                end_x, end_y, end_z = (x_pts[-1], y_pts[-1], z_pts[-1]) if draw_limit > 0 else (0,0,0)
+                    for i in range(st.session_state.dh_step_unlocked):
+                        T_draw = np.dot(T_draw, gt_matrices[i])
+                        x_pts.append(T_draw[0, 3]); y_pts.append(T_draw[1, 3]); z_pts.append(T_draw[2, 3])
+                        fig.add_trace(go.Scatter3d(x=[x_pts[-2], x_pts[-1]], y=[y_pts[-2], y_pts[-1]], z=[z_pts[-2], z_pts[-1]], mode='lines', line=dict(color=link_colors[i % len(link_colors)], width=18), showlegend=False))
+                        add_cylinder(fig, T_draw)
+                        draw_axes_3d(fig, T_draw, scale=35)
+                    end_x, end_y, end_z = (x_pts[-1], y_pts[-1], z_pts[-1]) if st.session_state.dh_step_unlocked > 0 else (0,0,0)
+
+                # ================= TÍNH NĂNG MỚI: THỰC HÀNH IK GIẢI TÍCH =================
+                elif prac_type == "🎯 Giải tích IK (Nhập Công thức)":
+                    st.write("### Tìm nghiệm IK Giải tích")
+                    st.info("💡 Dùng các biến Target: `X, Y, Z` và Tham số DH: `a1, d1, a2, ...`. Các hàm `atan2(Y,X), acos(x)` tự động trả về độ (Degrees).")
+                    
+                    t_cols = st.columns(3)
+                    t_x_ik = t_cols[0].number_input("Target X", -1000.0, 1000.0, 150.0, step=10.0)
+                    t_y_ik = t_cols[1].number_input("Target Y", -1000.0, 1000.0, 150.0, step=10.0)
+                    t_z_ik = t_cols[2].number_input("Target Z", -1000.0, 1000.0, 100.0, step=10.0)
+                    
+                    with st.form("ik_form"):
+                        for i in range(st.session_state.num_joints):
+                            st.session_state.ik_formulas[i] = st.text_input(f"Nhập nghiệm theta {i+1} (Độ):", value=st.session_state.ik_formulas[i], placeholder="Ví dụ: atan2(Y, X)")
+                        
+                        if st.form_submit_button("Tính toán & Kiểm tra IK"):
+                            res, err = evaluate_ik_formula(st.session_state.ik_formulas, t_x_ik, t_y_ik, t_z_ik, current_dh_df, st.session_state.num_joints)
+                            if res is None:
+                                st.error(f"❌ Lỗi cú pháp: {err}")
+                                st.session_state.ik_calculated_thetas = None
+                            else:
+                                st.session_state.ik_calculated_thetas = res
+                                # Kiểm tra xem End Effector có tới đích không
+                                T_test = np.eye(4)
+                                for i in range(st.session_state.num_joints):
+                                    row = current_dh_df.iloc[i]
+                                    T_test = np.dot(T_test, dh_transform_matrix(row['θ'] + res[i], row['d'], row['a'], row['α']))
+                                dist = np.linalg.norm(T_test[:3, 3] - np.array([t_x_ik, t_y_ik, t_z_ik]))
+                                
+                                if dist < 1.0: st.success(f"🎉 Rất chính xác! Sai số chỉ {dist:.2f} mm.")
+                                else: st.error(f"❌ Điểm gắp chưa tới Target. Sai số: {dist:.1f} mm. Hãy kiểm tra lại công thức định lý Cosin hoặc Atan2!")
+                    
+                    # Vẽ đồ họa kết quả IK (nếu có)
+                    T_draw, x_pts, y_pts, z_pts = np.eye(4), [0], [0], [0]
+                    add_cylinder(fig, T_draw)
+                    
+                    # Target Cross
+                    for x, y, z in [([t_x_ik - 15, t_x_ik + 15], [t_y_ik, t_y_ik], [t_z_ik, t_z_ik]), ([t_x_ik, t_x_ik], [t_y_ik - 15, t_y_ik + 15], [t_z_ik, t_z_ik]), ([t_x_ik, t_x_ik], [t_y_ik, t_y_ik], [t_z_ik - 15, t_z_ik + 15])]:
+                        fig.add_trace(go.Scatter3d(x=x, y=y, z=z, mode='lines', line=dict(color='red', width=3), showlegend=False))
+
+                    if st.session_state.ik_calculated_thetas is not None:
+                        thetas_render = st.session_state.ik_calculated_thetas
+                        for i in range(st.session_state.num_joints):
+                            row = current_dh_df.iloc[i]
+                            T_draw = np.dot(T_draw, dh_transform_matrix(row['θ'] + thetas_render[i], row['d'], row['a'], row['α']))
+                            x_pts.append(T_draw[0, 3]); y_pts.append(T_draw[1, 3]); z_pts.append(T_draw[2, 3])
+                            fig.add_trace(go.Scatter3d(x=[x_pts[-2], x_pts[-1]], y=[y_pts[-2], y_pts[-1]], z=[z_pts[-2], z_pts[-1]], mode='lines', line=dict(color=link_colors[i % len(link_colors)], width=18), showlegend=False))
+                            add_cylinder(fig, T_draw)
+                        fig.add_trace(go.Scatter3d(x=[x_pts[-1]], y=[y_pts[-1]], z=[z_pts[-1]], mode='markers', marker=dict(size=22, color='royalblue', line=dict(width=2, color='darkblue')), showlegend=False))
+                        end_x, end_y, end_z = x_pts[-1], y_pts[-1], z_pts[-1]
+                    else:
+                        end_x, end_y, end_z = 0, 0, 0
 
         fig.update_layout(
             uirevision="khoa_2D_ben_ngoai",
@@ -330,30 +419,34 @@ if robot_type == "Cánh tay nối tiếp (Articulated)":
 
     with col_out:
         if mode in ["IK", "FK"]:
-            o_cols = st.columns(3)
-            o_cols[0].metric("End X", f"{end_x:.1f}")
-            o_cols[1].metric("End Y", f"{end_y:.1f}")
-            o_cols[2].metric("End Z", f"{end_z:.1f}")
-            if mode == "IK": st.metric("Error", f"{np.sqrt((end_x - t_x)**2 + (end_y - t_y)**2 + (end_z - t_z)**2):.1f}")
-                    
+            st.markdown("### 🎯 End-Effector")
+            st.metric("X", f"{end_x:.1f}")
+            st.metric("Y", f"{end_y:.1f}")
+            st.metric("Z", f"{end_z:.1f}")
+            if mode == "IK": st.metric("Sai số", f"{np.sqrt((end_x - t_x)**2 + (end_y - t_y)**2 + (end_z - t_z)**2):.1f}")
             st.write("---")
             st.write("**Joint Output**")
-            st.write(f"Base Pan: &nbsp;&nbsp;&nbsp; **{th_base:.1f} deg**")
-            for i, ang in enumerate(angles): st.write(f"theta {i+1} (Tilt): **{ang:.1f} deg**")
+            st.write(f"Base Pan: &nbsp;&nbsp;&nbsp; **{th_base:.1f}°**")
+            for i, ang in enumerate(angles): st.write(f"theta {i+1}: &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; **{ang:.1f}°**")
                 
         elif mode == "DH":
-            if not practice_mode or (practice_mode and is_success) or (practice_mode and draw_limit == st.session_state.num_joints):
-                o_cols1, o_cols2 = st.columns(2), st.columns(2)
-                o_cols1[0].metric("End X", f"{end_x:.1f}"); o_cols1[1].metric("End Y", f"{end_y:.1f}")
-                o_cols2[0].metric("End Z", f"{end_z:.1f}"); o_cols2[1].metric("Error", "0.0")
-                
+            st.markdown("### 🎯 End-Effector")
+            if not practice_mode or (practice_mode and prac_type == "📚 Từng bước FK (Ma trận)" and st.session_state.dh_step_unlocked == st.session_state.num_joints) or (practice_mode and prac_type == "🎯 Giải tích IK (Nhập Công thức)" and st.session_state.ik_calculated_thetas is not None):
+                st.metric("X", f"{end_x:.1f}")
+                st.metric("Y", f"{end_y:.1f}")
+                st.metric("Z", f"{end_z:.1f}")
                 st.write("---")
-                st.write("**Joint Output**")
-                for i in range(st.session_state.num_joints): st.write(f"theta {i+1}: &nbsp;&nbsp;&nbsp;&nbsp; **{dh_angles[i]:.1f} deg**")
+                st.write("**Joint Angles**")
+                if not practice_mode:
+                    for i in range(st.session_state.num_joints): st.write(f"theta {i+1}: &nbsp;&nbsp;&nbsp;&nbsp; **{dh_angles[i]:.1f}°**")
+                elif prac_type == "🎯 Giải tích IK (Nhập Công thức)":
+                    for i in range(st.session_state.num_joints): st.write(f"theta {i+1}: &nbsp;&nbsp;&nbsp;&nbsp; **{st.session_state.ik_calculated_thetas[i]:.1f}°**")
+            else:
+                st.info("Hoàn thành bài tập để xem kết quả")
 
 
 # =====================================================================
-# MODULE 2: ROBOT TUYẾN TÍNH (CARTESIAN) - CHUẨN CƠ KHÍ CNC & UI MỚI
+# MODULE 2: ROBOT TUYẾN TÍNH (CARTESIAN)
 # =====================================================================
 elif robot_type == "Robot Tuyến tính (Cartesian)":
     header_col1, header_col2 = st.columns([3, 1])
@@ -362,49 +455,29 @@ elif robot_type == "Robot Tuyến tính (Cartesian)":
     c_ctrl, c_plot, c_out = st.columns([1, 2.5, 1])
     with c_ctrl:
         st.subheader("Trục Tịnh Tiến")
-        px = st.slider("Trục Y (Cụm gắp chạy ngang trên cầu)", -200.0, 200.0, 100.0, step=5.0)
-        py = st.slider("Trục X (Cả thanh cầu chạy tới/lui)", -200.0, 200.0, 80.0, step=5.0)
+        px = st.slider("Trục X (Cụm gắp chạy ngang trên cầu)", -200.0, 200.0, 100.0, step=5.0)
+        py = st.slider("Trục Y (Cả thanh cầu chạy tới/lui)", -200.0, 200.0, 80.0, step=5.0)
         pz = st.slider("Trục Z (Trục nâng hạ cụm gắp)", -200.0, 0.0, -150.0, step=5.0)
         st.write("---")
-        st.info(" Chuẩn CNC: Trục X là 2 thanh ray tĩnh định hướng. Cầu trục vắt ngang là trục Y. Khi cụm gắp (cyan) trượt trên cầu tức là đang thay đổi tọa độ Y.")
+        st.info("💡 Chuẩn CNC: Trục Y là 2 thanh ray tĩnh định hướng. Cầu trục vắt ngang là trục X. Khi cụm gắp (cyan) trượt trên cầu tức là đang thay đổi tọa độ X.")
     
     with c_plot:
         fig_cart = go.Figure()
-        
-        # 1. Vẽ 2 Thanh ray trượt dưới đất cho trục Y
         fig_cart.add_trace(go.Scatter3d(x=[-200, -200], y=[-200, 200], z=[0, 0], mode='lines', line=dict(color='#555555', width=6), showlegend=False))
         fig_cart.add_trace(go.Scatter3d(x=[200, 200], y=[-200, 200], z=[0, 0], mode='lines', line=dict(color='#555555', width=6), showlegend=False))
-        
-        # 2. Vẽ Cầu trục vắt ngang (Trục X)
         fig_cart.add_trace(go.Scatter3d(x=[-200, 200], y=[py, py], z=[0, 0], mode='lines', line=dict(color='#FFD700', width=12), showlegend=False))
-        
-        # 3. Vẽ Trục Z nâng hạ
         fig_cart.add_trace(go.Scatter3d(x=[px, px], y=[py, py], z=[0, pz], mode='lines', line=dict(color='#FF00FF', width=12), showlegend=False))
-        
-        # Vẽ các khớp nối
         fig_cart.add_trace(go.Scatter3d(x=[-200, 200], y=[py, py], z=[0, 0], mode='markers', marker=dict(size=8, color='white'), showlegend=False))
         fig_cart.add_trace(go.Scatter3d(x=[px], y=[py], z=[0], mode='markers', marker=dict(size=14, color='cyan', line=dict(width=2, color='black')), showlegend=False))
         fig_cart.add_trace(go.Scatter3d(x=[px], y=[py], z=[pz], mode='markers', marker=dict(size=22, color='#FF3366', line=dict(width=3, color='white')), showlegend=False))
-            
-        fig_cart.update_layout(
-            scene=dict(
-                xaxis_title="Trục X (Ngang)", yaxis_title="Trục Y (Sâu)", zaxis_title="Trục Z (Cao)",
-                xaxis=dict(range=[-250, 250], showbackground=False), 
-                yaxis=dict(range=[-250, 250], showbackground=False), 
-                zaxis=dict(range=[-250, 50], showbackground=False), 
-                aspectmode='cube'
-            ), 
-            margin=dict(l=0, r=0, t=0, b=0), height=600
-        )
+        fig_cart.update_layout(scene=dict(camera=dict(eye=dict(x=0, y=-2, z=1)), xaxis_title="X", yaxis_title="Y", zaxis_title="Z", xaxis=dict(range=[-250, 250], showbackground=False), yaxis=dict(range=[-250, 250], showbackground=False), zaxis=dict(range=[-250, 50], showbackground=False), aspectmode='cube'), margin=dict(l=0, r=0, t=0, b=0), height=600)
         st.plotly_chart(fig_cart, use_container_width=True)
         
     with c_out:
-        # ĐÃ TỐI ƯU UI: Xếp dọc thay vì ép vào 3 cột ngang
-        st.markdown("###  End-Effector")
-        st.metric(" Vị trí X", f"{px:.1f} mm")
-        st.metric(" Vị trí Y", f"{py:.1f} mm")
-        st.metric(" Vị trí Z", f"{pz:.1f} mm")
-        
+        st.markdown("### 🎯 End-Effector")
+        st.metric("X", f"{px:.1f} mm")
+        st.metric("Y", f"{py:.1f} mm")
+        st.metric("Z", f"{pz:.1f} mm")
         st.write("---")
         st.markdown("### ⚙️ Joint Values")
         st.write(f"**d1 (Trục X):** &nbsp;&nbsp; {px:.1f} mm")
@@ -413,7 +486,7 @@ elif robot_type == "Robot Tuyến tính (Cartesian)":
 
 
 # =====================================================================
-# MODULE 3: SCARA ROBOT - ĐÃ FIX UI HIỂN THỊ
+# MODULE 3: SCARA ROBOT
 # =====================================================================
 elif robot_type == "SCARA Robot":
     header_col1, header_col2 = st.columns([3, 1])
@@ -430,43 +503,36 @@ elif robot_type == "SCARA Robot":
         th2 = st.slider("Khớp xoay 2 (Elbow)", -150, 150, -45)
         d3 = st.slider("Khớp tịnh tiến 3 (Trục Z)", -100, 0, -50)
         st.write("---")
-        st.info(" SCARA hoạt động theo cơ chế RRP (Xoay - Xoay - Tịnh tiến). Chuyên dùng trong Pick & Place tốc độ cao.")
+        st.info("💡 SCARA hoạt động theo cơ chế RRP (Xoay - Xoay - Tịnh tiến).")
 
     with sc_plot:
         fig_sc = go.Figure()
         th1_r, th2_r = np.radians(th1), np.radians(th2)
-        
         x0, y0, z0 = 0, 0, 50
         x1, y1, z1 = L1 * np.cos(th1_r), L1 * np.sin(th1_r), 50
         x2, y2, z2 = x1 + L2 * np.cos(th1_r + th2_r), y1 + L2 * np.sin(th1_r + th2_r), 50
         x3, y3, z3 = x2, y2, 50 + d3
-        
         pts_x, pts_y, pts_z = [x0, x1, x2, x3], [y0, y1, y2, y3], [z0, z1, z2, z3]
         
         fig_sc.add_trace(go.Scatter3d(x=[0,0], y=[0,0], z=[0,50], mode='lines', line=dict(color='gray', width=20), showlegend=False))
-        
         colors = ['#FF5733', '#33FF57', '#3357FF']
         for i in range(3):
             fig_sc.add_trace(go.Scatter3d(x=[pts_x[i], pts_x[i+1]], y=[pts_y[i], pts_y[i+1]], z=[pts_z[i], pts_z[i+1]], mode='lines', line=dict(color=colors[i], width=18), showlegend=False))
             fig_sc.add_trace(go.Scatter3d(x=[pts_x[i]], y=[pts_y[i]], z=[pts_z[i]], mode='markers', marker=dict(size=15, color='white', line=dict(width=2, color='black')), showlegend=False))
-            
         fig_sc.add_trace(go.Scatter3d(x=[x3], y=[y3], z=[z3], mode='markers', marker=dict(size=12, color='black', symbol='diamond'), showlegend=False))
-        
         fig_sc.update_layout(scene=dict(xaxis=dict(range=[-300, 300], showbackground=False, showticklabels=False), yaxis=dict(range=[-300, 300], showbackground=False, showticklabels=False), zaxis=dict(range=[-50, 150], showbackground=False, showticklabels=False), aspectmode='cube'), margin=dict(l=0, r=0, t=0, b=0), height=600)
         st.plotly_chart(fig_sc, use_container_width=True)
 
     with sc_out:
-        # ĐÃ TỐI ƯU UI
-        st.markdown("### End-Effector")
-        st.metric(" Vị trí X", f"{x3:.1f} mm")
-        st.metric(" Vị trí Y", f"{y3:.1f} mm")
-        st.metric(" Vị trí Z", f"{z3:.1f} mm")
-        
+        st.markdown("### 🎯 End-Effector")
+        st.metric("X", f"{x3:.1f} mm")
+        st.metric("Y", f"{y3:.1f} mm")
+        st.metric("Z", f"{z3:.1f} mm")
         st.write("---")
-        st.markdown("### Joint Values")
-        st.write(f"**θ1 (Base):** &nbsp;&nbsp;&nbsp; {th1:.1f}°")
-        st.write(f"**θ2 (Elbow):** &nbsp; {th2:.1f}°")
-        st.write(f"**d3 (Z):** &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; {d3:.1f} mm")
+        st.markdown("### ⚙️ Joint Values")
+        st.write(f"**θ1:** &nbsp;&nbsp;&nbsp; {th1:.1f}°")
+        st.write(f"**θ2:** &nbsp;&nbsp;&nbsp; {th2:.1f}°")
+        st.write(f"**d3:** &nbsp;&nbsp;&nbsp; {d3:.1f} mm")
 
 
 # =====================================================================
@@ -474,39 +540,32 @@ elif robot_type == "SCARA Robot":
 # =====================================================================
 elif robot_type == "Delta Robot":
     header_col1, header_col2 = st.columns([3, 1])
-    with header_col1: st.title("Delta Parallel Robot Simulator")
+    with header_col1: st.title("Delta Parallel Simulator")
 
     dl_ctrl, dl_plot, dl_out = st.columns([1, 2.5, 1])
-    
     with dl_ctrl:
         st.subheader("Inverse Kinematics (IK)")
         t_x = st.slider("X Target", -100.0, 100.0, 0.0)
         t_y = st.slider("Y Target", -100.0, 100.0, 0.0)
         t_z = st.slider("Z Target", -250.0, -100.0, -180.0)
-        
         st.write("---")
         st.caption("Thông số cơ khí:")
         R_B = st.number_input("Bán kính đế tĩnh (R)", 50, 150, 80)
         R_P = st.number_input("Bán kính mâm gắp (r)", 10, 80, 30)
         L = st.number_input("Tay đòn trên (L)", 50, 200, 100)
         l_arm = st.number_input("Tay đòn dưới (l)", 100, 300, 180)
-        
-        st.write("---")
-        st.info(" Không giống như các robot nối tiếp, Delta Robot (Hệ song song) phải dùng thuật toán giải hình học không gian IK để điều khiển 3 cánh tay gập mở đồng bộ.")
 
     def delta_ik(X, Y, Z, R_B, R_P, L, l_arm):
         thetas, pts_u, pts_l = [], [], []
         for alpha_deg in [0, 120, 240]:
             alpha = np.radians(alpha_deg)
-            Xt = X * np.cos(alpha) + Y * np.sin(alpha)
-            Yt = -X * np.sin(alpha) + Y * np.cos(alpha)
+            Xt, Yt = X * np.cos(alpha) + Y * np.sin(alpha), -X * np.sin(alpha) + Y * np.cos(alpha)
             Xp, Yp, Zp = Xt + R_P, Yt, Z
             l_eff_sq = l_arm**2 - Yp**2
             if l_eff_sq < 0: return None, None, None 
             l_eff = np.sqrt(l_eff_sq)
             dx, dz = Xp - R_B, Zp - 0
-            dist_sq = dx**2 + dz**2
-            val = (L**2 + dist_sq - l_eff**2) / (2 * L * np.sqrt(dist_sq))
+            val = (L**2 + dx**2 + dz**2 - l_eff**2) / (2 * L * np.sqrt(dx**2 + dz**2))
             if abs(val) > 1: return None, None, None 
             theta = np.arctan2(dz, dx) - np.arccos(val)
             thetas.append(np.degrees(theta))
@@ -519,37 +578,28 @@ elif robot_type == "Delta Robot":
 
     with dl_plot:
         fig_dl = go.Figure()
-        
-        if thetas is None:
-            st.error("Tọa độ nằm ngoài không gian làm việc của Robot Delta!")
+        if thetas is None: st.error("Tọa độ nằm ngoài không gian làm việc của Robot Delta!")
         else:
-            base_pts = [(R_B*np.cos(np.radians(a)), R_B*np.sin(np.radians(a)), 0) for a in [0, 120, 240, 0]]
-            bx, by, bz = zip(*base_pts)
+            bx, by, bz = zip(*[(R_B*np.cos(np.radians(a)), R_B*np.sin(np.radians(a)), 0) for a in [0, 120, 240, 0]])
             fig_dl.add_trace(go.Scatter3d(x=bx, y=by, z=bz, mode='lines+markers', line=dict(color='gray', width=8), marker=dict(size=10), showlegend=False))
-            
-            plat_pts = pts_l + [pts_l[0]]
-            px, py, pz = zip(*plat_pts)
+            px, py, pz = zip(*(pts_l + [pts_l[0]]))
             fig_dl.add_trace(go.Scatter3d(x=px, y=py, z=pz, mode='lines+markers', line=dict(color='orange', width=8), marker=dict(size=6, color='black'), showlegend=False))
-            
             arm_colors = ['#FF3366', '#33FF57', '#3357FF']
             for i in range(3):
                 fig_dl.add_trace(go.Scatter3d(x=[bx[i], pts_u[i][0]], y=[by[i], pts_u[i][1]], z=[bz[i], pts_u[i][2]], mode='lines+markers', line=dict(color=arm_colors[i], width=12), marker=dict(size=8, color='white'), showlegend=False))
                 fig_dl.add_trace(go.Scatter3d(x=[pts_u[i][0], pts_l[i][0]], y=[pts_u[i][1], pts_l[i][1]], z=[pts_u[i][2], pts_l[i][2]], mode='lines', line=dict(color='cyan', width=5), showlegend=False))
-
         fig_dl.add_trace(go.Scatter3d(x=[t_x, t_x], y=[t_y, t_y], z=[t_z, t_z - 20], mode='lines', line=dict(color='white', width=10), showlegend=False))
-
         fig_dl.update_layout(scene=dict(xaxis=dict(range=[-200, 200], showbackground=False, showticklabels=False), yaxis=dict(range=[-200, 200], showbackground=False, showticklabels=False), zaxis=dict(range=[-250, 50], showbackground=False, showticklabels=False), aspectmode='cube'), margin=dict(l=0, r=0, t=0, b=0), height=600)
         st.plotly_chart(fig_dl, use_container_width=True)
 
     with dl_out:
         if thetas is not None:
+            st.markdown("### 🎯 Target")
+            st.metric("X", f"{t_x:.1f} mm")
+            st.metric("Y", f"{t_y:.1f} mm")
+            st.metric("Z", f"{t_z:.1f} mm")
             st.write("---")
-            st.write("**Target Position**")
-            st.metric("Target X", f"{t_x:.1f} mm")
-            st.metric("Target Y", f"{t_y:.1f} mm")
-            st.metric("Target Z", f"{t_z:.1f} mm")
-            st.write("---")
-            st.write("**Joint Values (IK Output)**")
-            st.write(f"Góc Động cơ 1: &nbsp;&nbsp;&nbsp; **{thetas[0]:.1f}°**")
-            st.write(f"Góc Động cơ 2: &nbsp;&nbsp;&nbsp; **{thetas[1]:.1f}°**")
-            st.write(f"Góc Động cơ 3: &nbsp;&nbsp;&nbsp; **{thetas[2]:.1f}°**")
+            st.markdown("### ⚙️ IK Output (Góc Động cơ)")
+            st.write(f"**Motor 1:** &nbsp; {thetas[0]:.1f}°")
+            st.write(f"**Motor 2:** &nbsp; {thetas[1]:.1f}°")
+            st.write(f"**Motor 3:** &nbsp; {thetas[2]:.1f}°")
