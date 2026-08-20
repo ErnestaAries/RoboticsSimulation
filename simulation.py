@@ -66,6 +66,14 @@ if 'ik_formulas' not in st.session_state:
     st.session_state.ik_formulas = [""] * 6
 if 'ik_calculated_thetas' not in st.session_state:
     st.session_state.ik_calculated_thetas = None
+    
+# TÍNH NĂNG MỚI: Quản lý Biến trung gian IK
+if 'ik_inter_df' not in st.session_state:
+    st.session_state.ik_inter_df = pd.DataFrame([
+        {"Tên biến": "r_sq", "Công thức": "X^2 + Y^2"},
+        {"Tên biến": "s", "Công thức": "Z - d1"},
+        {"Tên biến": "D", "Công thức": "(r_sq + s^2 - a2^2 - a3^2) / (2 * a2 * a3)"}
+    ])
 
 def set_fk_preset(base, t1, t2, t3):
     st.session_state.fk_base = base; st.session_state.fk_t1 = t1; st.session_state.fk_t2 = t2
@@ -127,8 +135,11 @@ def evaluate_student_formula(expr_str, theta_val, d_val, a_val, alpha_val):
     try: return float(eval(str(expr_str).replace('^', '**'), {"__builtins__": {}}, safe_dict))
     except: return None
 
-# TÍNH NĂNG MỚI: Dịch công thức IK có bộ lặp (Cho phép giải ngược từ Khớp 3 lên Khớp 2)
-def evaluate_ik_formula(formulas, tx, ty, tz, dh_df, num_j):
+
+# =====================================================================
+# TÍNH NĂNG MỚI: DỊCH CÔNG THỨC IK CÓ HỖ TRỢ BIẾN TRUNG GIAN
+# =====================================================================
+def evaluate_ik_formula(formulas, tx, ty, tz, dh_df, num_j, inter_df):
     safe_dict = {
         'X': tx, 'Y': ty, 'Z': tz, 'x': tx, 'y': ty, 'z': tz,
         'cos': lambda a: np.cos(np.radians(a)), 'sin': lambda a: np.sin(np.radians(a)),
@@ -140,10 +151,20 @@ def evaluate_ik_formula(formulas, tx, ty, tz, dh_df, num_j):
     for i in range(len(dh_df)):
         safe_dict[f'a{i+1}'] = dh_df.iloc[i]['a']; safe_dict[f'd{i+1}'] = dh_df.iloc[i]['d']; safe_dict[f'alpha{i+1}'] = dh_df.iloc[i]['α']
     
+    # 1. Tính và nạp các biến trung gian vào môi trường toán học
+    for idx, row in inter_df.iterrows():
+        v_name = str(row['Tên biến']).strip()
+        v_form = str(row['Công thức']).strip()
+        if v_name and v_form:
+            try:
+                safe_dict[v_name] = float(eval(v_form.replace('^', '**'), {"__builtins__": {}}, safe_dict))
+            except Exception as e:
+                return None, f"Lỗi ở biến phụ '{v_name}': {str(e)}"
+
+    # 2. Giải lặp các góc Theta
     results = [0.0] * num_j
     unsolved = list(range(num_j))
     
-    # Cho máy tính lặp nhiều vòng: Ô nào tính được thì tính trước rồi lưu biến lại cho ô khác xài
     for _ in range(num_j):
         for i in unsolved.copy():
             f = formulas[i]
@@ -153,13 +174,12 @@ def evaluate_ik_formula(formulas, tx, ty, tz, dh_df, num_j):
                 try:
                     val = float(eval(str(f).replace('^', '**'), {"__builtins__": {}}, safe_dict))
                     results[i] = val
-                    safe_dict[f'theta{i+1}'] = val  # <--- BÍ QUYẾT Ở ĐÂY: Lưu lại kết quả để ô khác xài
+                    safe_dict[f'theta{i+1}'] = val  
                     unsolved.remove(i)
                 except Exception:
-                    pass # Cứ bỏ qua, chờ vòng lặp sau (vì có thể biến phụ thuộc như theta3 chưa được tính)
+                    pass 
                     
     if unsolved:
-        # Nếu lặp xong mà vẫn còn ô chưa giải được -> Bắt lỗi của ô đầu tiên bị vướng để báo cho người dùng
         first_fail = unsolved[0]
         try:
             eval(str(formulas[first_fail]).replace('^', '**'), {"__builtins__": {}}, safe_dict)
@@ -175,14 +195,12 @@ def draw_axes_3d(fig, T, scale=35):
         fig.add_trace(go.Scatter3d(x=[origin[0], end_pt[0]], y=[origin[1], end_pt[1]], z=[origin[2], end_pt[2]], mode='lines', line=dict(color=color, width=5), hoverinfo='skip', showlegend=False))
         fig.add_trace(go.Cone(x=[end_pt[0]], y=[end_pt[1]], z=[end_pt[2]], u=[vec[0]], v=[vec[1]], w=[vec[2]], sizemode='absolute', sizeref=10, anchor='tail', colorscale=[[0, color], [1, color]], showscale=False, hoverinfo='skip'))
 
-# TÍNH NĂNG MỚI: VẼ KHỐI TRỤ (CYLINDER) THAY CHO HÌNH CẦU
 def add_cylinder(fig, T, radius=8, height=24, color='#d3d3d3'):
     z_vals = np.linspace(-height/2, height/2, 2)
     theta = np.linspace(0, 2*np.pi, 20)
     theta_grid, z_grid = np.meshgrid(theta, z_vals)
     x_grid, y_grid = radius * np.cos(theta_grid), radius * np.sin(theta_grid)
     
-    # Thân trụ
     X, Y, Z = np.zeros_like(x_grid), np.zeros_like(y_grid), np.zeros_like(z_grid)
     for i in range(x_grid.shape[0]):
         for j in range(x_grid.shape[1]):
@@ -190,7 +208,6 @@ def add_cylinder(fig, T, radius=8, height=24, color='#d3d3d3'):
             X[i,j], Y[i,j], Z[i,j] = pt_world[:3]
     fig.add_trace(go.Surface(x=X, y=Y, z=Z, colorscale=[[0, color], [1, color]], showscale=False, hoverinfo='skip', opacity=1.0))
     
-    # Nắp trụ (Trên & Dưới)
     r_grid, th_grid = np.meshgrid(np.linspace(0, radius, 2), theta)
     xc, yc = r_grid * np.cos(th_grid), r_grid * np.sin(th_grid)
     for z_off in [-height/2, height/2]:
@@ -203,7 +220,7 @@ def add_cylinder(fig, T, radius=8, height=24, color='#d3d3d3'):
 
 
 # =====================================================================
-# MODULE 1: CÁNH TAY NỐI TIẾP (BẢN FULL OPTION + CYLINDER + IK PRACTICE)
+# MODULE 1: CÁNH TAY NỐI TIẾP
 # =====================================================================
 if robot_type == "Cánh tay nối tiếp (Articulated)":
     header_col1, header_col2 = st.columns([3, 1])
@@ -258,7 +275,6 @@ if robot_type == "Cánh tay nối tiếp (Articulated)":
         fig = go.Figure()
 
         if mode in ["IK", "FK"]:
-            # Render lines and spheres as before for standard IK/FK
             if mode == "FK": base_rad, angles_res = np.radians(th_base), angles
             else:
                 base_rad, t_r = np.arctan2(t_y, t_x), np.sqrt(t_x**2 + t_y**2)
@@ -290,23 +306,19 @@ if robot_type == "Cánh tay nối tiếp (Articulated)":
                     T_matrices.append(T_current); x_pts.append(T_current[0, 3]); y_pts.append(T_current[1, 3]); z_pts.append(T_current[2, 3])
                 end_x, end_y, end_z = T_current[0, 3], T_current[1, 3], T_current[2, 3]
                 
-                # VẼ LINKS BẰNG LINE VÀ JOINTS BẰNG CYLINDERS (Thay thế hình cầu)
                 for i in range(st.session_state.num_joints):
                     fig.add_trace(go.Scatter3d(x=[x_pts[i], x_pts[i+1]], y=[y_pts[i], y_pts[i+1]], z=[z_pts[i], z_pts[i+1]], mode='lines', line=dict(color=link_colors[i % len(link_colors)], width=18), showlegend=False))
                 
-                # End-effector vẫn giữ hình cầu cho dễ phân biệt
                 fig.add_trace(go.Scatter3d(x=[x_pts[-1]], y=[y_pts[-1]], z=[z_pts[-1]], mode='markers', marker=dict(size=22, color='royalblue', line=dict(width=2, color='darkblue')), showlegend=False))
-                
                 for i, T in enumerate(T_matrices[:-1]): 
-                    add_cylinder(fig, T) # Vẽ khối trụ ở tâm trục quay
+                    add_cylinder(fig, T) 
                     draw_axes_3d(fig, T, scale=35)
-                draw_axes_3d(fig, T_matrices[-1], scale=35) # Trục cuối
+                draw_axes_3d(fig, T_matrices[-1], scale=35)
 
             else:
-                prac_type = st.radio("Loại bài tập:", ["📚 Từng bước FK (Ma trận)", "🎯 Giải tích IK (Nhập Công thức)"], horizontal=True)
+                prac_type = st.radio("Loại bài tập:", ["📚 Từng bước FK (Ma trận)", "🎯 Giải tích IK (Tạo Biến Phụ & Giải)"], horizontal=True)
                 
                 if prac_type == "📚 Từng bước FK (Ma trận)":
-                    # Logic cũ của bạn
                     st.info("💡 Nhập ma trận biến đổi. Có thể dùng số `0`, `1` hoặc công thức `cos(theta)`, `-sin(theta)*cos(alpha)`.")
                     current_step = st.session_state.dh_step_unlocked
                     is_success = False
@@ -315,7 +327,7 @@ if robot_type == "Cánh tay nối tiếp (Articulated)":
                     T_current_gt = np.eye(4)
                     for i in range(st.session_state.num_joints):
                         row = current_dh_df.iloc[i]
-                        T_i = dh_transform_matrix(row['θ'] + 0, row['d'], row['a'], row['α']) # Góc 0
+                        T_i = dh_transform_matrix(row['θ'] + 0, row['d'], row['a'], row['α']) 
                         T_current_gt = np.dot(T_current_gt, T_i); gt_matrices.append(T_i)
                         
                     if current_step < st.session_state.num_joints:
@@ -340,7 +352,6 @@ if robot_type == "Cánh tay nối tiếp (Articulated)":
                         st.success("🎉 Bạn đã giải đúng toàn bộ!")
                         if st.button("Làm lại từ đầu"): st.session_state.dh_step_unlocked = 0; st.rerun()
                     
-                    # Vẽ đồ họa cho chế độ FK Practice
                     T_draw, x_pts, y_pts, z_pts = np.eye(4), [0], [0], [0]
                     add_cylinder(fig, T_draw)
                     draw_axes_3d(fig, T_draw, scale=35)
@@ -353,27 +364,31 @@ if robot_type == "Cánh tay nối tiếp (Articulated)":
                     end_x, end_y, end_z = (x_pts[-1], y_pts[-1], z_pts[-1]) if st.session_state.dh_step_unlocked > 0 else (0,0,0)
 
                 # ================= TÍNH NĂNG MỚI: THỰC HÀNH IK GIẢI TÍCH =================
-                elif prac_type == "🎯 Giải tích IK (Nhập Công thức)":
-                    st.write("### Tìm nghiệm IK Giải tích")
-                    st.info("💡 Dùng các biến Target: `X, Y, Z` và Tham số DH: `a1, d1, a2, ...`. Các hàm `atan2(Y,X), acos(x)` tự động trả về độ (Degrees).")
+                elif prac_type == "🎯 Giải tích IK (Tạo Biến Phụ & Giải)":
                     
                     t_cols = st.columns(3)
                     t_x_ik = t_cols[0].number_input("Target X", -1000.0, 1000.0, 150.0, step=10.0)
                     t_y_ik = t_cols[1].number_input("Target Y", -1000.0, 1000.0, 150.0, step=10.0)
                     t_z_ik = t_cols[2].number_input("Target Z", -1000.0, 1000.0, 100.0, step=10.0)
                     
+                    st.write("### 1. Bảng Biến Trung Gian (Tùy chọn)")
+                    st.info("💡 Bạn có thể bóc tách công thức dài thành các biến phụ (VD: r_sq, s, D) tại đây để tính toán dễ hơn. Dấu `^` tự động hiểu là lũy thừa.")
+                    
+                    edited_inter_df = st.data_editor(st.session_state.ik_inter_df, num_rows="dynamic", use_container_width=True)
+                    st.session_state.ik_inter_df = edited_inter_df
+                    
+                    st.write("### 2. Nhập Nghiệm Các Khớp")
                     with st.form("ik_form"):
                         for i in range(st.session_state.num_joints):
-                            st.session_state.ik_formulas[i] = st.text_input(f"Nhập nghiệm theta {i+1} (Độ):", value=st.session_state.ik_formulas[i], placeholder="Ví dụ: atan2(Y, X)")
+                            st.session_state.ik_formulas[i] = st.text_input(f"Nhập nghiệm theta {i+1} (Độ):", value=st.session_state.ik_formulas[i], placeholder="Ví dụ: acos(D)")
                         
                         if st.form_submit_button("Tính toán & Kiểm tra IK"):
-                            res, err = evaluate_ik_formula(st.session_state.ik_formulas, t_x_ik, t_y_ik, t_z_ik, current_dh_df, st.session_state.num_joints)
+                            res, err = evaluate_ik_formula(st.session_state.ik_formulas, t_x_ik, t_y_ik, t_z_ik, current_dh_df, st.session_state.num_joints, st.session_state.ik_inter_df)
                             if res is None:
-                                st.error(f"❌ Lỗi cú pháp: {err}")
+                                st.error(f"❌ Lỗi: {err}")
                                 st.session_state.ik_calculated_thetas = None
                             else:
                                 st.session_state.ik_calculated_thetas = res
-                                # Kiểm tra xem End Effector có tới đích không
                                 T_test = np.eye(4)
                                 for i in range(st.session_state.num_joints):
                                     row = current_dh_df.iloc[i]
@@ -383,11 +398,10 @@ if robot_type == "Cánh tay nối tiếp (Articulated)":
                                 if dist < 1.0: st.success(f"🎉 Rất chính xác! Sai số chỉ {dist:.2f} mm.")
                                 else: st.error(f"❌ Điểm gắp chưa tới Target. Sai số: {dist:.1f} mm. Hãy kiểm tra lại công thức định lý Cosin hoặc Atan2!")
                     
-                    # Vẽ đồ họa kết quả IK (nếu có)
+                    # Vẽ đồ họa kết quả IK
                     T_draw, x_pts, y_pts, z_pts = np.eye(4), [0], [0], [0]
                     add_cylinder(fig, T_draw)
                     
-                    # Target Cross
                     for x, y, z in [([t_x_ik - 15, t_x_ik + 15], [t_y_ik, t_y_ik], [t_z_ik, t_z_ik]), ([t_x_ik, t_x_ik], [t_y_ik - 15, t_y_ik + 15], [t_z_ik, t_z_ik]), ([t_x_ik, t_x_ik], [t_y_ik, t_y_ik], [t_z_ik - 15, t_z_ik + 15])]:
                         fig.add_trace(go.Scatter3d(x=x, y=y, z=z, mode='lines', line=dict(color='red', width=3), showlegend=False))
 
@@ -431,7 +445,7 @@ if robot_type == "Cánh tay nối tiếp (Articulated)":
                 
         elif mode == "DH":
             st.markdown("### 🎯 End-Effector")
-            if not practice_mode or (practice_mode and prac_type == "📚 Từng bước FK (Ma trận)" and st.session_state.dh_step_unlocked == st.session_state.num_joints) or (practice_mode and prac_type == "🎯 Giải tích IK (Nhập Công thức)" and st.session_state.ik_calculated_thetas is not None):
+            if not practice_mode or (practice_mode and prac_type == "📚 Từng bước FK (Ma trận)" and st.session_state.dh_step_unlocked == st.session_state.num_joints) or (practice_mode and prac_type == "🎯 Giải tích IK (Tạo Biến Phụ & Giải)" and st.session_state.ik_calculated_thetas is not None):
                 st.metric("X", f"{end_x:.1f}")
                 st.metric("Y", f"{end_y:.1f}")
                 st.metric("Z", f"{end_z:.1f}")
@@ -439,11 +453,10 @@ if robot_type == "Cánh tay nối tiếp (Articulated)":
                 st.write("**Joint Angles**")
                 if not practice_mode:
                     for i in range(st.session_state.num_joints): st.write(f"theta {i+1}: &nbsp;&nbsp;&nbsp;&nbsp; **{dh_angles[i]:.1f}°**")
-                elif prac_type == "🎯 Giải tích IK (Nhập Công thức)":
+                elif prac_type == "🎯 Giải tích IK (Tạo Biến Phụ & Giải)":
                     for i in range(st.session_state.num_joints): st.write(f"theta {i+1}: &nbsp;&nbsp;&nbsp;&nbsp; **{st.session_state.ik_calculated_thetas[i]:.1f}°**")
             else:
                 st.info("Hoàn thành bài tập để xem kết quả")
-
 
 # =====================================================================
 # MODULE 2: ROBOT TUYẾN TÍNH (CARTESIAN)
