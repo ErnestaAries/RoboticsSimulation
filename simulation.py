@@ -418,6 +418,47 @@ if robot_type == "Cánh tay nối tiếp (Articulated)":
                     else:
                         end_x, end_y, end_z = 0, 0, 0
 
+                elif prac_type == "🔍 Khám phá D-H (Lập bảng)":
+                    st.write("### Bóc tách 4 bước biến đổi D-H")
+                    st.info("💡 Bạn có từng thắc mắc tại sao Khớp i-1 lại nhảy sang được Khớp i chỉ với 4 thông số? Hãy tự tay kéo lần lượt 4 thanh trượt theo đúng quy tắc D-H để tìm câu trả lời!")
+                    
+                    khop_idx = st.selectbox("Chọn Khớp muốn mổ xẻ:", [f"Khớp {i} nhảy sang Khớp {i+1}" for i in range(st.session_state.num_joints)])
+                    idx = int(khop_idx.split(" ")[1])
+                    
+                    st.write("---")
+                    st.write("**Quy tắc bàn tay phải:**")
+                    dh_cols = st.columns(4)
+                    val_d = dh_cols[0].slider(f"1. Tịnh tiến Z (d)", -200.0, 200.0, 0.0)
+                    val_theta = dh_cols[1].slider(f"2. Xoay Z (θ)", -180.0, 180.0, 0.0)
+                    val_a = dh_cols[2].slider(f"3. Tịnh tiến X (a)", -200.0, 200.0, 0.0)
+                    val_alpha = dh_cols[3].slider(f"4. Xoay X (α)", -180.0, 180.0, 0.0)
+                    
+                    # Tính toán thủ công từng bước D-H
+                    def trans_z(d): return np.array([[1,0,0,0],[0,1,0,0],[0,0,1,d],[0,0,0,1]])
+                    def rot_z(th): th_r = np.radians(th); return np.array([[np.cos(th_r),-np.sin(th_r),0,0],[np.sin(th_r),np.cos(th_r),0,0],[0,0,1,0],[0,0,0,1]])
+                    def trans_x(a): return np.array([[1,0,0,a],[0,1,0,0],[0,0,1,0],[0,0,0,1]])
+                    def rot_x(al): al_r = np.radians(al); return np.array([[1,0,0,0],[0,np.cos(al_r),-np.sin(al_r),0],[0,np.sin(al_r),np.cos(al_r),0],[0,0,0,1]])
+                    
+                    T_base = np.eye(4) # Bắt đầu từ tọa độ (0,0,0) cho dễ hình dung
+                    
+                    T1 = np.dot(T_base, trans_z(val_d))
+                    T2 = np.dot(T1, rot_z(val_theta))
+                    T3 = np.dot(T2, trans_x(val_a))
+                    T4 = np.dot(T3, rot_x(val_alpha))
+                    
+                    # Vẽ đường nối đứt đoạn minh họa chuyển động
+                    fig.add_trace(go.Scatter3d(x=[T_base[0,3], T1[0,3]], y=[T_base[1,3], T1[1,3]], z=[T_base[2,3], T1[2,3]], mode='lines', line=dict(color='yellow', width=5, dash='dot'), name='Dịch Z'))
+                    fig.add_trace(go.Scatter3d(x=[T2[0,3], T3[0,3]], y=[T2[1,3], T3[1,3]], z=[T2[2,3], T3[2,3]], mode='lines', line=dict(color='cyan', width=5, dash='dot'), name='Dịch X'))
+                    
+                    # Vẽ trục cũ (Gốc) và trục Mới (Ngọn)
+                    draw_axes_3d(fig, T_base, scale=35)
+                    add_cylinder(fig, T_base, color='#666666') # Trục quay Z cũ (màu tối)
+                    
+                    draw_axes_3d(fig, T4, scale=50) # Trục mới vẽ to hơn
+                    add_cylinder(fig, T4, color='#e74c3c') # Trục quay Z mới của Khớp tiếp theo (màu đỏ)
+                    
+                    end_x, end_y, end_z = T4[0,3], T4[1,3], T4[2,3]
+                    
         fig.update_layout(
             uirevision="khoa_2D_ben_ngoai",
             scene=dict(
