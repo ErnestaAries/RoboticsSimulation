@@ -458,7 +458,7 @@ if robot_type == "Cánh tay nối tiếp (Articulated)":
                     add_cylinder(fig, T4, color='#e74c3c') # Trục quay Z mới của Khớp tiếp theo (màu đỏ)
                     
                     end_x, end_y, end_z = T4[0,3], T4[1,3], T4[2,3]
-                    
+
         fig.update_layout(
             uirevision="khoa_2D_ben_ngoai",
             scene=dict(
