@@ -50,9 +50,12 @@ if 't_z' not in st.session_state: st.session_state.t_z = 100.0
 
 if 'full_dh_df' not in st.session_state:
     st.session_state.full_dh_df = pd.DataFrame([
-        {'θ': 0.0, 'd': 80.0, 'a': 0.0, 'α': -90.0}, {'θ': 0.0, 'd': 0.0, 'a': 120.0, 'α': 0.0},
-        {'θ': 0.0, 'd': 0.0, 'a': 100.0, 'α': 0.0}, {'θ': 0.0, 'd': 80.0, 'a': 0.0, 'α': -90.0},
-        {'θ': 0.0, 'd': 0.0, 'a': 60.0, 'α': 90.0}, {'θ': 0.0, 'd': 40.0, 'a': 0.0, 'α': 0.0},
+        {'θ': 0.0, 'd': 80.0, 'a': 0.0, 'α': -90.0},
+        {'θ': 0.0, 'd': 0.0, 'a': 120.0, 'α': 0.0},
+        {'θ': 0.0, 'd': 0.0, 'a': 100.0, 'α': 0.0},
+        {'θ': 0.0, 'd': 80.0, 'a': 0.0, 'α': -90.0},
+        {'θ': 0.0, 'd': 0.0, 'a': 60.0, 'α': 90.0},
+        {'θ': 0.0, 'd': 40.0, 'a': 0.0, 'α': 0.0},
     ])
 
 if 'student_formulas_dh' not in st.session_state: st.session_state.student_formulas_dh = [[["1", "0", "0", "0"], ["0", "1", "0", "0"], ["0", "0", "1", "0"], ["0", "0", "0", "1"]] for _ in range(6)]
@@ -66,7 +69,6 @@ if 'ik_inter_df' not in st.session_state:
 
 # STATE MỚI CHO TÍNH NĂNG "KHÁM PHÁ D-H"
 if 'exp_step' not in st.session_state: st.session_state.exp_step = 0
-if 'exp_student_dh' not in st.session_state: st.session_state.exp_student_dh = [{'d':0.0, 'theta':0.0, 'a':0.0, 'alpha':0.0} for _ in range(6)]
 if 'exp_rand_target' not in st.session_state: st.session_state.exp_rand_target = None
 
 def trans_z(d): return np.array([[1,0,0,0],[0,1,0,0],[0,0,1,d],[0,0,0,1]])
@@ -164,7 +166,6 @@ def evaluate_ik_formula(formulas, tx, ty, tz, dh_df, num_j, inter_df):
         except Exception as e: return None, f"Ô theta {first_fail+1}: {str(e)}"
     return results, "OK"
 
-# VẼ TRỤC VỚI HỖ TRỢ OPACITY (GHOST FRAME)
 def draw_axes_3d(fig, T, scale=35, opacity=1.0):
     origin = T[:3, 3]
     for vec, color in [(T[:3, 0], 'red'), (T[:3, 1], 'lime'), (T[:3, 2], 'blue')]:
@@ -233,6 +234,7 @@ if robot_type == "Cánh tay nối tiếp (Articulated)":
 
         elif mode == "DH":
             practice_mode = st.toggle("🎓 Bật Practice Mode")
+            
             st.write("**Joints**")
             j1, j2, j3 = st.columns([1.5, 1, 1.5])
             if j1.button("➖", use_container_width=True) and st.session_state.num_joints > 2: st.session_state.num_joints -= 1
@@ -249,6 +251,7 @@ if robot_type == "Cánh tay nối tiếp (Articulated)":
             else:
                 prac_type = st.radio("Loại bài tập:", ["📚 FK: Từng bước", "🎯 IK: Giải tích", "🔍 Khám phá D-H"], horizontal=True)
                 
+                # --- UI CHO THỰC HÀNH TỪNG BƯỚC FK ---
                 if prac_type == "📚 FK: Từng bước":
                     st.info("💡 Nhập ma trận biến đổi. Có thể dùng số `0`, `1` hoặc công thức `cos(theta)`, `-sin(theta)*cos(alpha)`.")
                     current_step = st.session_state.dh_step_unlocked
@@ -282,6 +285,7 @@ if robot_type == "Cánh tay nối tiếp (Articulated)":
                         st.success("🎉 Bạn đã giải đúng toàn bộ!")
                         if st.button("Làm lại từ đầu"): st.session_state.dh_step_unlocked = 0; st.rerun()
 
+                # --- UI CHO THỰC HÀNH GIẢI TÍCH IK ---
                 elif prac_type == "🎯 IK: Giải tích":
                     if st.session_state.num_joints > 3:
                         st.warning("⚠️ IK Giải tích chỉ hỗ trợ tối đa 3 bậc tự do.")
@@ -313,41 +317,39 @@ if robot_type == "Cánh tay nối tiếp (Articulated)":
                                     if dist < 1.0: st.success(f"🎉 Rất chính xác! Sai số chỉ {dist:.2f} mm.")
                                     else: st.error(f"❌ Sai số: {dist:.1f} mm. Hãy kiểm tra lại công thức định lý Cosin hoặc Atan2!")
 
-                # ================= 2 CHẾ ĐỘ MỚI: XÂY DỰNG NỐI TIẾP & THỬ THÁCH NGẪU NHIÊN =================
+                # ================= ĐÃ LÀM LẠI: 2 TÙY CHỌN D-H HOÀN TOÀN MỚI =================
                 elif prac_type == "🔍 Khám phá D-H":
-                    exp_mode = st.radio("Chọn chế độ khám phá:", ["🏗️ 1. Xây dựng Robot nối tiếp", "🎲 2. Thử thách giải đố (Quiz)"], horizontal=True)
+                    exp_mode = st.radio("Chọn chế độ:", ["🎬 1. Phân tích D-H (Trực quan hóa)", "🎲 2. Thử thách giải đố (Blind Test)"], horizontal=True)
                     st.write("---")
                     
-                    if exp_mode == "🏗️ 1. Xây dựng Robot nối tiếp":
-                        st.info("💡 Hãy dùng 4 thanh trượt D-H để điều chỉnh **Trục Tọa Độ Của Bạn (Màu đỏ)** trùng khớp hoàn hảo với **Trục Tọa Độ Mục Tiêu (Bóng mờ)**.")
+                    if exp_mode == "🎬 1. Phân tích D-H (Trực quan hóa)":
                         curr = st.session_state.exp_step
-                        
                         if curr < st.session_state.num_joints:
-                            st.markdown(f"### Đang lắp ráp: Khớp {curr} ➔ Khớp {curr+1}")
+                            gt_row = current_dh_df.iloc[curr]
+                            st.markdown(f"### Đang phân tích: Khớp {curr} ➔ Khớp {curr+1}")
+                            st.info(f"💡 Dựa vào bảng D-H bạn đã nhập ở cột bên trái, thông số thật của khớp này là: **d = {gt_row['d']}, θ = {gt_row['θ']}, a = {gt_row['a']}, α = {gt_row['α']}**.")
+                            st.write("👉 **Nhiệm vụ:** Hãy tự tay kéo 4 thanh trượt dưới đây từ $0$ tiến về đúng các giá trị trên để quan sát trục tọa độ biến đổi như thế nào!")
+                            
                             dh_cols = st.columns(4)
-                            val_d = dh_cols[0].slider(f"1. Tịnh tiến Z (d)", -200.0, 200.0, st.session_state.exp_student_dh[curr]['d'], step=10.0)
-                            val_theta = dh_cols[1].slider(f"2. Xoay Z (θ)", -180.0, 180.0, st.session_state.exp_student_dh[curr]['theta'], step=15.0)
-                            val_a = dh_cols[2].slider(f"3. Tịnh tiến X (a)", -200.0, 200.0, st.session_state.exp_student_dh[curr]['a'], step=10.0)
-                            val_alpha = dh_cols[3].slider(f"4. Xoay X (α)", -180.0, 180.0, st.session_state.exp_student_dh[curr]['alpha'], step=15.0)
+                            # GIẢI QUYẾT LAG BẰNG KEY ĐỘC LẬP
+                            val_d = dh_cols[0].slider(f"1. Tịnh tiến Z (d)", -200.0, 200.0, 0.0, step=10.0, key=f"d_vis_{curr}")
+                            val_theta = dh_cols[1].slider(f"2. Xoay Z (θ)", -180.0, 180.0, 0.0, step=15.0, key=f"th_vis_{curr}")
+                            val_a = dh_cols[2].slider(f"3. Tịnh tiến X (a)", -200.0, 200.0, 0.0, step=10.0, key=f"a_vis_{curr}")
+                            val_alpha = dh_cols[3].slider(f"4. Xoay X (α)", -180.0, 180.0, 0.0, step=15.0, key=f"al_vis_{curr}")
                             
-                            st.session_state.exp_student_dh[curr] = {'d': val_d, 'theta': val_theta, 'a': val_a, 'alpha': val_alpha}
+                            T_stud = dh_transform_matrix(val_theta, val_d, val_a, val_alpha)
+                            T_gt = dh_transform_matrix(gt_row['θ'], gt_row['d'], gt_row['a'], gt_row['α'])
                             
-                            if st.button("✅ Khớp hệ tọa độ! (Chốt & Đi tiếp)"):
-                                T_stud = np.dot(np.dot(trans_z(val_d), rot_z(val_theta)), np.dot(trans_x(val_a), rot_x(val_alpha)))
-                                gt_row = current_dh_df.iloc[curr]
-                                T_gt = dh_transform_matrix(gt_row['θ'], gt_row['d'], gt_row['a'], gt_row['α'])
-                                if np.allclose(T_stud, T_gt, atol=0.05):
-                                    st.success("Ghép khớp thành công!"); st.session_state.exp_step += 1; st.rerun()
-                                else: st.error("Chưa trùng khớp! Trục Z (Xanh dương) và Trục X (Đỏ) phải nằm đè lên nhau.")
+                            if np.allclose(T_stud, T_gt, atol=0.05):
+                                st.success("✅ Trục tọa độ đã trùng khớp hoàn toàn!")
+                                if st.button("Chốt & Phân tích khớp tiếp theo ➔"):
+                                    st.session_state.exp_step += 1; st.rerun()
                         else:
-                            st.success("🎉 Bạn đã lắp ráp xong toàn bộ Robot!")
-                            if st.button("Làm lại từ đầu"):
-                                st.session_state.exp_step = 0
-                                for i in range(6): st.session_state.exp_student_dh[i] = {'d':0.0, 'theta':0.0, 'a':0.0, 'alpha':0.0}
-                                st.rerun()
+                            st.success("🎉 Bạn đã phân tích xong toàn bộ Robot!")
+                            if st.button("Làm lại từ đầu"): st.session_state.exp_step = 0; st.rerun()
 
-                    elif exp_mode == "🎲 2. Thử thách giải đố (Quiz)":
-                        st.info("💡 Hệ thống đã tạo một Hệ Tọa Độ Mục Tiêu (Bóng mờ) ở vị trí ngẫu nhiên. Nhiệm vụ của bạn là dò tìm 4 thông số D-H để tới được đó!")
+                    elif exp_mode == "🎲 2. Thử thách giải đố (Blind Test)":
+                        st.info("💡 Hệ thống đã giấu bảng D-H và tự tạo một Hệ Tọa Độ Mục Tiêu (Bóng mờ) ngẫu nhiên. Nhiệm vụ của bạn là kéo 4 thanh trượt để dò ra thông số D-H đó!")
                         
                         if st.button("🔄 Tạo thử thách mới") or st.session_state.exp_rand_target is None:
                             st.session_state.exp_rand_target = {
@@ -359,19 +361,19 @@ if robot_type == "Cánh tay nối tiếp (Articulated)":
                             st.rerun()
 
                         dh_cols = st.columns(4)
-                        r_d = dh_cols[0].slider(f"1. Tịnh tiến Z (d)", -200.0, 200.0, 0.0, step=10.0, key="r_d")
-                        r_th = dh_cols[1].slider(f"2. Xoay Z (θ)", -180.0, 180.0, 0.0, step=15.0, key="r_th")
-                        r_a = dh_cols[2].slider(f"3. Tịnh tiến X (a)", -200.0, 200.0, 0.0, step=10.0, key="r_a")
-                        r_al = dh_cols[3].slider(f"4. Xoay X (α)", -180.0, 180.0, 0.0, step=15.0, key="r_al")
+                        r_d = dh_cols[0].slider(f"1. Tịnh tiến Z (d)", -200.0, 200.0, 0.0, step=10.0, key="quiz_d")
+                        r_th = dh_cols[1].slider(f"2. Xoay Z (θ)", -180.0, 180.0, 0.0, step=15.0, key="quiz_th")
+                        r_a = dh_cols[2].slider(f"3. Tịnh tiến X (a)", -200.0, 200.0, 0.0, step=10.0, key="quiz_a")
+                        r_al = dh_cols[3].slider(f"4. Xoay X (α)", -180.0, 180.0, 0.0, step=15.0, key="quiz_al")
 
-                        if st.button("✅ Kiểm tra đáp án"):
+                        if st.button("✅ Trả lời!"):
                             target = st.session_state.exp_rand_target
                             T_stud = dh_transform_matrix(r_th, r_d, r_a, r_al)
                             T_tar = dh_transform_matrix(target['theta'], target['d'], target['a'], target['alpha'])
                             if np.allclose(T_stud, T_tar, atol=0.05):
-                                st.success("🎉 Quá xuất sắc! Bạn đã hiểu hoàn toàn bản chất của D-H."); st.balloons()
+                                st.success("🎉 Quá xuất sắc! Bạn đã hiểu hoàn toàn bản chất của D-H.")
                             else:
-                                st.error("❌ Chưa khớp rồi! Bạn hãy kiểm tra lại hướng của trục Z và X nhé.")
+                                st.error("❌ Chưa khớp rồi! Gợi ý: Hãy quan sát hướng của trục Z (Màu xanh) và trục X (Màu đỏ).")
                                 with st.expander("👀 Xem đáp án"):
                                     st.write(f"d = {target['d']}, θ = {target['theta']}, a = {target['a']}, α = {target['alpha']}")
 
@@ -448,45 +450,39 @@ if robot_type == "Cánh tay nối tiếp (Articulated)":
                             end_x, end_y, end_z = x_pts[-1], y_pts[-1], z_pts[-1]
                         else: end_x, end_y, end_z = 0, 0, 0
 
-                # ĐỒ HỌA CHO 2 TÍNH NĂNG MỚI (XÂY DỰNG & QUIZ)
+                # ĐỒ HỌA CHO TÍNH NĂNG "KHÁM PHÁ D-H"
                 elif prac_type == "🔍 Khám phá D-H":
                     T_base = np.eye(4)
                     
-                    if exp_mode == "🏗️ 1. Xây dựng Robot nối tiếp":
-                        # Vẽ những khớp đã xây xong bằng thông số của Sinh viên
-                        for i in range(st.session_state.exp_step):
-                            stud = st.session_state.exp_student_dh[i]
-                            T_next = np.dot(T_base, dh_transform_matrix(stud['theta'], stud['d'], stud['a'], stud['alpha']))
+                    if exp_mode == "🎬 1. Phân tích D-H (Trực quan hóa)":
+                        curr = st.session_state.exp_step
+                        # Vẽ những khớp đã hoàn thành
+                        for i in range(curr):
+                            row = current_dh_df.iloc[i]
+                            T_next = np.dot(T_base, dh_transform_matrix(row['θ'], row['d'], row['a'], row['α']))
                             fig.add_trace(go.Scatter3d(x=[T_base[0,3], T_next[0,3]], y=[T_base[1,3], T_next[1,3]], z=[T_base[2,3], T_next[2,3]], mode='lines', line=dict(color=link_colors[i % len(link_colors)], width=18), showlegend=False))
                             T_base = T_next
-                            add_cylinder(fig, T_base)
-                            draw_axes_3d(fig, T_base, scale=35)
+                            add_cylinder(fig, T_base); draw_axes_3d(fig, T_base, scale=35)
                         
-                        # Nếu chưa xây xong thì hiện Target mờ và Trục hiện tại
-                        if st.session_state.exp_step < st.session_state.num_joints:
-                            gt_row = current_dh_df.iloc[st.session_state.exp_step]
+                        if curr < st.session_state.num_joints:
+                            gt_row = current_dh_df.iloc[curr]
                             T_target = np.dot(T_base, dh_transform_matrix(gt_row['θ'], gt_row['d'], gt_row['a'], gt_row['α']))
-                            
-                            # Vẽ Target (Bóng mờ)
                             add_cylinder(fig, T_target, color='rgba(200,200,200,0.3)', opacity=0.3)
                             draw_axes_3d(fig, T_target, scale=35, opacity=0.3)
                             
-                            # Vẽ hệ tọa độ Sinh viên đang thao tác
                             T1 = np.dot(T_base, trans_z(val_d))
                             T2 = np.dot(T1, rot_z(val_theta))
                             T3 = np.dot(T2, trans_x(val_a))
                             T4 = np.dot(T3, rot_x(val_alpha))
                             fig.add_trace(go.Scatter3d(x=[T_base[0,3], T1[0,3]], y=[T_base[1,3], T1[1,3]], z=[T_base[2,3], T1[2,3]], mode='lines', line=dict(color='yellow', width=5, dash='dot'), showlegend=False))
                             fig.add_trace(go.Scatter3d(x=[T2[0,3], T3[0,3]], y=[T2[1,3], T3[1,3]], z=[T2[2,3], T3[2,3]], mode='lines', line=dict(color='cyan', width=5, dash='dot'), showlegend=False))
-                            draw_axes_3d(fig, T4, scale=50) 
-                            add_cylinder(fig, T4, color='#e74c3c')
+                            draw_axes_3d(fig, T4, scale=50); add_cylinder(fig, T4, color='#e74c3c')
                             end_x, end_y, end_z = T4[0,3], T4[1,3], T4[2,3]
                         else:
                             end_x, end_y, end_z = T_base[0,3], T_base[1,3], T_base[2,3]
 
-                    elif exp_mode == "🎲 2. Thử thách giải đố (Quiz)":
+                    elif exp_mode == "🎲 2. Thử thách giải đố (Blind Test)":
                         add_cylinder(fig, T_base, color='#666666'); draw_axes_3d(fig, T_base, scale=35)
-                        
                         target = st.session_state.exp_rand_target
                         if target is not None:
                             T_tar = dh_transform_matrix(target['theta'], target['d'], target['a'], target['alpha'])
@@ -525,7 +521,7 @@ if robot_type == "Cánh tay nối tiếp (Articulated)":
                 
         elif mode == "DH":
             st.markdown("### 🎯 End-Effector")
-            if not practice_mode or (practice_mode and prac_type == "📚 FK: Từng bước" and st.session_state.dh_step_unlocked == st.session_state.num_joints) or (practice_mode and prac_type == "🎯 IK: Giải tích" and st.session_state.ik_calculated_thetas is not None) or (practice_mode and prac_type == "🔍 Khám phá D-H" and exp_mode == "🏗️ 1. Xây dựng Robot nối tiếp" and st.session_state.exp_step == st.session_state.num_joints):
+            if not practice_mode or (practice_mode and prac_type == "📚 FK: Từng bước" and st.session_state.dh_step_unlocked == st.session_state.num_joints) or (practice_mode and prac_type == "🎯 IK: Giải tích" and st.session_state.ik_calculated_thetas is not None) or (practice_mode and prac_type == "🔍 Khám phá D-H" and exp_mode == "🎬 1. Phân tích D-H (Trực quan hóa)" and st.session_state.exp_step == st.session_state.num_joints):
                 st.metric("X", f"{end_x:.1f}"); st.metric("Y", f"{end_y:.1f}"); st.metric("Z", f"{end_z:.1f}")
                 st.write("---")
                 st.write("**Joint Angles**")
